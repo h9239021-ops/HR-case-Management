@@ -89,11 +89,19 @@ let apiKey = localStorage.getItem("cms_api_key") || "";
 let model = localStorage.getItem("cms_model") || "claude-sonnet-4-5-20250929";
 
 let currentTab = "summary";
-let invSubTab = "harassment"; // harassment | misconduct
+let invSubTab = "bullying"; // bullying | sexual_harassment | misconduct
 let invSelectedCaseId = null;
 let reportSelectedCaseId = null;
 let committeeSelectedCaseId = null;
 let notifySelectedCaseId = null;
+let summaryExpandedOwner = null;
+let ncSelectedType = null; // 새 사건 등록 팝업에서 선택된 유형 (bullying|sexual_harassment|misconduct)
+
+const NC_TYPE_OPTIONS = [
+  { value: "bullying", label: "직장 내 괴롭힘" },
+  { value: "sexual_harassment", label: "직장 내 성희롱" },
+  { value: "misconduct", label: "비위행위 (그 외)" }
+];
 
 let casesCache = []; // full case rows, refreshed on demand
 
@@ -253,15 +261,21 @@ function renderSummary(el) {
     const list = byOwner[owner];
     const openN = list.filter(c => c.status !== "종결").length;
     const closedN = list.filter(c => c.status === "종결").length;
+    const isExpanded = summaryExpandedOwner === owner;
+    const ownerArg = encodeURIComponent(owner);
     const caseChips = list.map(c =>
-      `<span class="badge ${STATUS_BADGE[c.status] || "badge-gray"}" style="cursor:pointer; margin:2px 4px 2px 0;" onclick="openCaseDetail('${c.id}')" title="${escAttr(c.status)}">${escapeHtml(truncate(c.case_name, 14))}</span>`
+      `<span class="badge ${STATUS_BADGE[c.status] || "badge-gray"}" style="cursor:pointer; margin:2px 4px 2px 0;" onclick="event.stopPropagation(); openCaseDetail('${c.id}')" title="${escAttr(c.status)}">${escapeHtml(truncate(c.case_name, 14))}</span>`
     ).join("");
-    return `
-      <tr>
-        <td>${escapeHtml(owner)}</td>
+    const mainRow = `
+      <tr class="clickable" onclick="toggleOwnerExpand(decodeURIComponent('${ownerArg}'))">
+        <td>${isExpanded ? "▼" : "▶"} ${escapeHtml(owner)}</td>
         <td>${list.length}건 (진행중 ${openN} · 종결 ${closedN})</td>
-        <td>${caseChips}</td>
       </tr>`;
+    const detailRow = isExpanded ? `
+      <tr>
+        <td colspan="2" style="background:#f9fafb;">${caseChips}</td>
+      </tr>` : "";
+    return mainRow + detailRow;
   }).join("");
 
   el.innerHTML = `
@@ -278,9 +292,10 @@ function renderSummary(el) {
 
     <div class="panel">
       <h3>담당자별 현황</h3>
+      <p class="muted small">담당자를 클릭하면 담당 사건 목록이 펼쳐집니다.</p>
       ${ownerKeys.length === 0 ? "<p class='case-list-empty'>등록된 사건이 없습니다.</p>" : `
       <table class="data-table">
-        <thead><tr><th>담당자</th><th>건수</th><th>담당 사건 (클릭 시 상세보기)</th></tr></thead>
+        <thead><tr><th>담당자</th><th>건수</th></tr></thead>
         <tbody>${ownerRows}</tbody>
       </table>`}
     </div>
@@ -294,6 +309,11 @@ function renderSummary(el) {
       </table>`}
     </div>
   `;
+}
+
+function toggleOwnerExpand(owner) {
+  summaryExpandedOwner = (summaryExpandedOwner === owner) ? null : owner;
+  renderSummary(document.getElementById("tabContent"));
 }
 
 function openCaseDetail(caseId) {
@@ -347,7 +367,7 @@ function goToCaseInTab(caseId, tab) {
   const c = casesCache.find(x => x.id === caseId);
   closeCaseModal();
   if (tab === "investigation") {
-    invSubTab = (c && c.case_category === "harassment") ? "harassment" : "misconduct";
+    invSubTab = (c && c.case_type) || "misconduct";
     invSelectedCaseId = caseId;
   } else if (tab === "report") {
     reportSelectedCaseId = caseId;
@@ -422,16 +442,18 @@ async function deleteCase(caseId) {
    ============================================================ */
 function renderInvestigation(el) {
   el.innerHTML = `
-    <div class="subtabs">
-      <button class="subtab-btn ${invSubTab === "harassment" ? "active" : ""}" onclick="setInvSubTab('harassment')">직장 내 괴롭힘·성희롱 조사</button>
-      <button class="subtab-btn ${invSubTab === "misconduct" ? "active" : ""}" onclick="setInvSubTab('misconduct')">비위행위 조사 (그 외)</button>
+    <div class="subtabs" style="justify-content:space-between; align-items:center;">
+      <div style="display:flex; gap:6px;">
+        ${NC_TYPE_OPTIONS.map(o => `
+          <button class="subtab-btn ${invSubTab === o.value ? "active" : ""}" onclick="setInvSubTab('${o.value}')">${o.label} 조사</button>
+        `).join("")}
+      </div>
+      <button class="btn btn-primary" onclick="openNewCaseModal()">+ 새 사건 등록</button>
     </div>
     <div style="display:flex; gap:20px; align-items:flex-start;">
       <div class="panel" style="width:300px; flex-shrink:0;">
         <h3>사건 목록</h3>
         <div id="invCaseList"></div>
-        <button class="btn btn-primary" style="width:100%; margin-top:10px;" onclick="openNewCaseForm()">+ 새 사건 등록</button>
-        <div id="newCaseForm" class="hidden" style="margin-top:14px;"></div>
       </div>
       <div class="panel" style="flex:1;" id="invDetailPanel">
         <p class="muted">왼쪽에서 사건을 선택하거나 새로 등록하세요.</p>
@@ -446,7 +468,7 @@ function setInvSubTab(t) { invSubTab = t; invSelectedCaseId = null; renderInvest
 
 function renderInvCaseList() {
   const listEl = document.getElementById("invCaseList");
-  const list = casesCache.filter(c => c.case_category === invSubTab).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  const list = casesCache.filter(c => c.case_type === invSubTab).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
   if (list.length === 0) { listEl.innerHTML = "<p class='case-list-empty'>사건 없음</p>"; return; }
   listEl.innerHTML = list.map(c => `
     <div class="btn ${invSelectedCaseId === c.id ? "btn-primary" : ""}" style="width:100%; text-align:left; margin-bottom:6px; display:block;" onclick="selectInvCase('${c.id}')">
@@ -454,68 +476,105 @@ function renderInvCaseList() {
     </div>`).join("");
 }
 
-function openNewCaseForm() {
-  const box = document.getElementById("newCaseForm");
-  box.classList.remove("hidden");
-  if (invSubTab === "harassment") {
-    box.innerHTML = `
-      <label>사건명</label><input id="ncName" placeholder="예: OO팀 괴롭힘 신고 건" />
-      <label>세부유형</label>
-      <select id="ncType"><option value="bullying">직장 내 괴롭힘</option><option value="sexual_harassment">직장 내 성희롱</option></select>
-      <label>부서/사업장</label><input id="ncDept" />
-      <label>신고인</label><input id="ncReporter" />
-      <label>신고일자</label><input id="ncReportDate" type="date" />
-      <label>신고내용</label><textarea id="ncReportContent" placeholder="신고 접수된 내용을 최대한 상세히 입력하세요"></textarea>
-      <button class="btn btn-primary" style="width:100%" onclick="createHarassmentCase()">등록</button>
-    `;
-  } else {
-    box.innerHTML = `
-      <label>사건명</label><input id="ncName" placeholder="예: 회계팀 법인카드 사적유용 건" />
-      <label>부서/사업장</label><input id="ncDept" />
-      <label>비위행위 발생일</label><input id="ncIncidentDate" type="date" />
-      <label>비위행위 내용</label><textarea id="ncIncidentContent" placeholder="확인된 비위행위 내용을 최대한 상세히 입력하세요"></textarea>
-      <button class="btn btn-primary" style="width:100%" onclick="createMisconductCase()">등록</button>
-    `;
+function selectInvCase(id) { invSelectedCaseId = id; renderInvestigation(document.getElementById("tabContent")); }
+
+/* ---------------------------------------------------------- */
+/* 새 사건 등록 팝업 — 신고/접수 내용을 적으면 AI가 유형을 추천, 직접 수정도 가능 */
+/* ---------------------------------------------------------- */
+function ncToggleHtml() {
+  return NC_TYPE_OPTIONS.map(o => `
+    <div class="btn nc-type-opt ${ncSelectedType === o.value ? "btn-primary" : ""}" data-nc-type="${o.value}"
+         style="width:100%; text-align:left; margin-bottom:6px; display:block;" onclick="selectNcType('${o.value}')">
+      ${ncSelectedType === o.value ? "● " : "○ "}${o.label}
+    </div>`).join("");
+}
+
+function openNewCaseModal() {
+  ncSelectedType = null;
+  const box = document.getElementById("caseModalContent");
+  box.innerHTML = `
+    <h2>새 사건 등록</h2>
+    <label>사건명</label><input id="ncName" placeholder="예: OO팀 신고 건" />
+    <label>부서/사업장</label><input id="ncDept" />
+    <label>신고 내용 및 접수 내용 상세</label>
+    <textarea id="ncContent" style="min-height:160px;" placeholder="신고 또는 접수된 내용을 최대한 상세히 입력하세요. 이 내용을 바탕으로 AI가 사건 유형을 추천합니다."></textarea>
+
+    <div style="margin:4px 0 12px;">
+      <button class="btn" id="ncClassifyBtn" onclick="classifyNewCase()">🪄 AI로 유형 분류 추천받기</button>
+      <span id="ncClassifyStatus" class="small muted"></span>
+    </div>
+    <div id="ncClassifyReason" class="small muted" style="margin-bottom:10px;"></div>
+
+    <label>사건 유형 선택 (AI 추천 결과를 직접 수정할 수 있습니다)</label>
+    <div id="ncTypeToggle">${ncToggleHtml()}</div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeCaseModal()">취소</button>
+      <button class="btn btn-primary" onclick="submitNewCase()">등록</button>
+    </div>
+  `;
+  document.getElementById("caseModal").classList.remove("hidden");
+}
+
+function selectNcType(val) {
+  ncSelectedType = val;
+  document.getElementById("ncTypeToggle").innerHTML = ncToggleHtml();
+}
+
+async function classifyNewCase() {
+  if (!requireApiKey()) return;
+  const content = document.getElementById("ncContent").value.trim();
+  if (!content) { showToast("신고/접수 내용을 먼저 입력해주세요"); return; }
+  const btn = document.getElementById("ncClassifyBtn");
+  const statusEl = document.getElementById("ncClassifyStatus");
+  btn.disabled = true;
+  statusEl.innerHTML = "<span class='loading-dot'></span>";
+  try {
+    const sys = `당신은 한국 노동법(근로기준법, 남녀고용평등법)에 정통한 사내 인사팀 조사관입니다. 신고/접수 내용을 읽고 아래 세 유형 중 하나로 분류하세요.
+- bullying: 직장 내 괴롭힘 (지위·관계의 우위를 이용해 업무상 적정범위를 넘는 신체적·정신적 고통, 근무환경 악화 등)
+- sexual_harassment: 직장 내 성희롱 (성적 언동 등으로 인한 성적 굴욕감·혐오감, 성적 요구에 대한 불응을 이유로 한 불이익 등)
+- misconduct: 그 외 일반 비위행위 (횡령·유용, 규정 위반, 근태 문제 등 성희롱·괴롭힘에 해당하지 않는 사안)
+반드시 JSON 객체 하나만 출력하세요.`;
+    const userMsg = `신고/접수 내용:\n${content}\n\n{"recommended":"bullying|sexual_harassment|misconduct 중 하나","reason":"분류 이유를 2~3문장으로"}`;
+    const raw = await callClaude(sys, userMsg);
+    const result = extractJSON(raw);
+    if (["bullying", "sexual_harassment", "misconduct"].includes(result.recommended)) {
+      ncSelectedType = result.recommended;
+      document.getElementById("ncTypeToggle").innerHTML = ncToggleHtml();
+      document.getElementById("ncClassifyReason").innerHTML = `🪄 AI 추천 이유: ${escapeHtml(result.reason || "")}`;
+    }
+  } catch (e) {
+    showToast("분류 추천 실패: " + e.message);
+  } finally {
+    btn.disabled = false;
+    statusEl.innerHTML = "";
   }
 }
 
-async function createHarassmentCase() {
-  const payload = {
-    case_name: document.getElementById("ncName").value.trim() || "이름없는 사건",
-    case_category: "harassment",
-    case_type: document.getElementById("ncType").value,
-    department: document.getElementById("ncDept").value.trim(),
-    reporter: document.getElementById("ncReporter").value.trim(),
-    report_date: document.getElementById("ncReportDate").value || null,
-    report_content: document.getElementById("ncReportContent").value.trim(),
-    status: "접수",
-    created_by: session.user.email
-  };
-  const { data, error } = await sb.from("hr_case_cases").insert(payload).select().single();
-  if (error) { showToast("등록 실패: " + error.message); return; }
-  await refreshCases();
-  invSelectedCaseId = data.id;
-  renderInvestigation(document.getElementById("tabContent"));
-}
-async function createMisconductCase() {
-  const payload = {
-    case_name: document.getElementById("ncName").value.trim() || "이름없는 사건",
-    case_category: "misconduct",
-    case_type: "misconduct",
-    department: document.getElementById("ncDept").value.trim(),
-    incident_date: document.getElementById("ncIncidentDate").value || null,
-    incident_content: document.getElementById("ncIncidentContent").value.trim(),
-    status: "접수",
-    created_by: session.user.email
-  };
-  const { data, error } = await sb.from("hr_case_cases").insert(payload).select().single();
-  if (error) { showToast("등록 실패: " + error.message); return; }
-  await refreshCases();
-  invSelectedCaseId = data.id;
-  renderInvestigation(document.getElementById("tabContent"));
-}
+async function submitNewCase() {
+  if (!ncSelectedType) { showToast("사건 유형을 선택해주세요 (AI 추천을 받거나 직접 선택)"); return; }
+  const name = document.getElementById("ncName").value.trim() || "이름없는 사건";
+  const dept = document.getElementById("ncDept").value.trim();
+  const content = document.getElementById("ncContent").value.trim();
+  const isHarassment = ncSelectedType !== "misconduct";
 
-function selectInvCase(id) { invSelectedCaseId = id; renderInvestigation(document.getElementById("tabContent")); }
+  const payload = {
+    case_name: name,
+    case_category: isHarassment ? "harassment" : "misconduct",
+    case_type: ncSelectedType,
+    department: dept,
+    status: "접수",
+    created_by: session.user.email,
+    ...(isHarassment ? { report_content: content } : { incident_content: content })
+  };
+  const { data, error } = await sb.from("hr_case_cases").insert(payload).select().single();
+  if (error) { showToast("등록 실패: " + error.message); return; }
+  await refreshCases();
+  invSubTab = ncSelectedType;
+  invSelectedCaseId = data.id;
+  closeCaseModal();
+  renderInvestigation(document.getElementById("tabContent"));
+}
 
 async function renderInvDetail() {
   const panel = document.getElementById("invDetailPanel");
