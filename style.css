@@ -148,11 +148,21 @@ table.data-table tr.clickable:hover { background: #f7f9fc; }
 .subject-row {
   border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; background: #fafbfc;
 }
-.subject-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.subject-row-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
 .subject-row-head strong { font-size: 13.5px; }
+.subject-row-head .btn-danger { margin-left: auto; }
 .q-item { display: flex; gap: 8px; margin-bottom: 8px; align-items: flex-start; }
 .q-item textarea { margin-bottom: 0; flex: 1; min-height: 50px; }
 .q-item .btn { flex-shrink: 0; }
+
+.collapsible-title { cursor: pointer; user-select: none; }
+.attach-list { list-style: none; padding: 0; margin: 0 0 14px; }
+.attach-list li {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 0; border-bottom: 1px solid #f0f1f3; font-size: 13px;
+}
+.attach-list li a { color: var(--primary); text-decoration: none; word-break: break-all; }
+.attach-list li a:hover { text-decoration: underline; }
 
 .action-bar { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; flex-wrap: wrap; }
 
