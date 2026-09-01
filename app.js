@@ -1290,7 +1290,15 @@ function downloadBlob(blob, filename) {
 }
 
 async function uploadCaseFile(caseId, section, subjectId, file) {
-  const safeName = file.name.replace(/[^\w.\-가-힣 ]/g, "_");
+  // Supabase Storage의 key(경로)는 한글/공백이 들어가면 "Invalid key" 에러가 나므로,
+  // 실제 저장 경로는 영문/숫자만 남기고 원본 파일명은 DB(file_name)에 그대로 보관해 화면에는 원래 이름으로 보여준다.
+  const dotIdx = file.name.lastIndexOf(".");
+  const ext = (dotIdx > -1 ? file.name.slice(dotIdx) : "").replace(/[^A-Za-z0-9.]/g, "").slice(0, 10);
+  const base = (dotIdx > -1 ? file.name.slice(0, dotIdx) : file.name)
+    .replace(/[^A-Za-z0-9_-]/g, "_")
+    .replace(/_+/g, "_")
+    .slice(0, 60);
+  const safeName = (base || "file") + (ext || "");
   const path = `${caseId}/${section}/${Date.now()}_${safeName}`;
   const { error: upErr } = await sb.storage.from(ATTACH_BUCKET).upload(path, file);
   if (upErr) throw new Error("업로드 실패: " + upErr.message + " (Supabase에 'case-files' Storage 버킷이 없다면 관리자에게 SQL 실행을 요청하세요)");
