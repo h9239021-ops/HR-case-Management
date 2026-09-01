@@ -109,3 +109,48 @@ create policy "authenticated_all_subjects" on hr_case_subjects
 drop policy if exists "authenticated_all_questions" on hr_case_questions;
 create policy "authenticated_all_questions" on hr_case_questions
   for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+
+-- ============================================================
+-- 담당자/조사자 수기입력 (2026-08 추가)
+-- ============================================================
+alter table hr_case_cases add column if not exists owner_name text;
+alter table hr_case_cases add column if not exists investigators text;
+
+-- ============================================================
+-- 사전 면담 + 다중 피신고인 + 조사대상자 조사일시(시간)/장소 + 첨부파일 (2026-09 추가)
+-- ============================================================
+alter table hr_case_cases add column if not exists accused text; -- 피신고인 여러 명, 쉼표로 구분
+alter table hr_case_cases add column if not exists pre_interview_interviewer text;
+alter table hr_case_cases add column if not exists pre_interview_interviewee text;
+alter table hr_case_cases add column if not exists pre_interview_date date;
+alter table hr_case_cases add column if not exists pre_interview_location text;
+alter table hr_case_cases add column if not exists pre_interview_content text;
+
+alter table hr_case_subjects add column if not exists investigation_time text;
+alter table hr_case_subjects add column if not exists location text;
+
+-- 4. 첨부파일 (사건정보/사전면담/녹취록/조사일지/증빙자료 공용)
+create table if not exists hr_case_attachments (
+  id uuid primary key default gen_random_uuid(),
+  case_id uuid not null references hr_case_cases(id) on delete cascade,
+  subject_id uuid references hr_case_subjects(id) on delete cascade,
+  section text not null check (section in ('case_info','pre_interview','transcript','investigation_log','evidence')),
+  file_name text not null,
+  storage_path text not null,
+  uploaded_by text,
+  uploaded_at timestamptz not null default now()
+);
+alter table hr_case_attachments enable row level security;
+drop policy if exists "authenticated_all_attachments" on hr_case_attachments;
+create policy "authenticated_all_attachments" on hr_case_attachments
+  for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+
+-- 첨부파일 실제 저장용 Storage 버킷 (비공개 — 서명된 URL로만 열람)
+insert into storage.buckets (id, name, public)
+values ('case-files', 'case-files', false)
+on conflict (id) do nothing;
+
+drop policy if exists "authenticated_case_files_all" on storage.objects;
+create policy "authenticated_case_files_all" on storage.objects
+  for all using (bucket_id = 'case-files' and auth.role() = 'authenticated')
+  with check (bucket_id = 'case-files' and auth.role() = 'authenticated');
