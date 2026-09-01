@@ -96,6 +96,8 @@ let committeeSelectedCaseId = null;
 let notifySelectedCaseId = null;
 let summaryExpandedOwner = null;
 let ncSelectedType = null; // 새 사건 등록 팝업에서 선택된 유형 (bullying|sexual_harassment|misconduct)
+let preInterviewExpanded = false; // 사전 면담 섹션 접기/펼치기 (사건 바뀌면 초기화)
+let pendingReflectFile = null; // "파일 내용을 본문에 반영하시겠습니까?" 팝업 대기 중인 File 객체
 
 const NC_TYPE_OPTIONS = [
   { value: "bullying", label: "직장 내 괴롭힘" },
@@ -369,6 +371,7 @@ function goToCaseInTab(caseId, tab) {
   if (tab === "investigation") {
     invSubTab = (c && c.case_type) || "misconduct";
     invSelectedCaseId = caseId;
+    preInterviewExpanded = false;
   } else if (tab === "report") {
     reportSelectedCaseId = caseId;
   }
@@ -476,7 +479,7 @@ function renderInvCaseList() {
     </div>`).join("");
 }
 
-function selectInvCase(id) { invSelectedCaseId = id; renderInvestigation(document.getElementById("tabContent")); }
+function selectInvCase(id) { invSelectedCaseId = id; preInterviewExpanded = false; renderInvestigation(document.getElementById("tabContent")); }
 
 /* ---------------------------------------------------------- */
 /* 새 사건 등록 팝업 — 신고/접수 내용을 적으면 AI가 유형을 추천, 직접 수정도 가능 */
@@ -588,6 +591,10 @@ async function renderInvDetail() {
     const { data: qs } = await sb.from("hr_case_questions").select("*").in("subject_id", subjectIds).order("order_index");
     questions = qs || [];
   }
+  const { data: attachments } = await sb.from("hr_case_attachments").select("*").eq("case_id", c.id).order("uploaded_at");
+  const caseInfoAttachments = (attachments || []).filter(a => a.section === "case_info");
+  const preInterviewAttachments = (attachments || []).filter(a => a.section === "pre_interview");
+  const subjectFileAttachments = (attachments || []).filter(a => ["transcript", "investigation_log", "evidence"].includes(a.section));
 
   const ownerHtml = `
     <label>담당자 (로그인 계정과 무관하게 직접 입력 — 메인/서브 여러 명이면 쉼표로 구분)</label>
@@ -599,49 +606,86 @@ async function renderInvDetail() {
     <textarea style="min-height:70px;" placeholder="예: 커넥트웨이브 HQ 경영지원본부 HR지원실 HRM팀 홍길동" onchange="saveCaseField('${c.id}','investigators',this.value)">${escapeHtml(c.investigators || "")}</textarea>
   `;
 
-  const inputFieldsHtml = c.case_category === "harassment" ? `
-    <label>신고인</label><input id="edReporter" value="${escAttr(c.reporter)}" onchange="saveCaseField('${c.id}','reporter',this.value)" />
-    <label>신고일자</label><input id="edReportDate" type="date" value="${c.report_date || ""}" onchange="saveCaseField('${c.id}','report_date',this.value)" />
+  const isHarassment = c.case_category === "harassment";
+
+  // ---- 직장 내 괴롭힘 · 성희롱: 사건정보(파일첨부 포함) + 사전면담(접기/펼치기) ----
+  const caseInfoHtml = `
+    <div class="section-title">사건 정보</div>
+    ${ownerHtml}
+    <label>신고인</label><input value="${escAttr(c.reporter)}" onchange="saveCaseField('${c.id}','reporter',this.value)" />
+    <label style="display:flex; justify-content:space-between; align-items:center;">
+      <span>피신고인</span>
+      <button type="button" class="btn btn-sm" onclick="addAccusedInput('${c.id}')">+ 피신고인 추가</button>
+    </label>
+    ${accusedInputsHtml(c.id, c.accused)}
+    <label>신고일자</label><input type="date" value="${c.report_date || ""}" onchange="saveCaseField('${c.id}','report_date',this.value)" />
     <label>신고내용</label><textarea onchange="saveCaseField('${c.id}','report_content',this.value)">${escapeHtml(c.report_content || "")}</textarea>
-  ` : `
+    <div style="margin:-4px 0 10px;">
+      <button type="button" class="btn btn-sm" onclick="attachFileFlow('${c.id}','case_info','report_content')">📎 파일 첨부</button>
+    </div>
+    ${attachmentListHtml(caseInfoAttachments)}
+  `;
+
+  const preInterviewHtml = `
+    <div class="section-title collapsible-title" onclick="togglePreInterview()">사전 면담 ${preInterviewExpanded ? "▼" : "▶"} <span class="small muted">(선택 사항 — 클릭해서 펼치기/접기)</span></div>
+    ${preInterviewExpanded ? `
+      <label>면담자</label><input value="${escAttr(c.pre_interview_interviewer)}" onchange="saveCaseField('${c.id}','pre_interview_interviewer',this.value)" />
+      <label>피면담자</label><input value="${escAttr(c.pre_interview_interviewee)}" onchange="saveCaseField('${c.id}','pre_interview_interviewee',this.value)" />
+      <label>면담일자</label><input type="date" value="${c.pre_interview_date || ""}" onchange="saveCaseField('${c.id}','pre_interview_date',this.value)" />
+      <label>면담장소</label><input value="${escAttr(c.pre_interview_location)}" onchange="saveCaseField('${c.id}','pre_interview_location',this.value)" />
+      <label>면담내용</label><textarea onchange="saveCaseField('${c.id}','pre_interview_content',this.value)">${escapeHtml(c.pre_interview_content || "")}</textarea>
+      <div style="margin:-4px 0 10px;">
+        <button type="button" class="btn btn-sm" onclick="attachFileFlow('${c.id}','pre_interview','pre_interview_content')">📎 파일 첨부</button>
+      </div>
+      <label>증빙자료</label>
+      ${attachmentListHtml(preInterviewAttachments)}
+    ` : ""}
+  `;
+
+  // ---- 그 외 비위행위: 기존 방식 그대로 ----
+  const inputFieldsHtml = !isHarassment ? `
+    <div class="section-title">사건 정보</div>
+    ${ownerHtml}
     <label>비위행위 발생일</label><input type="date" value="${c.incident_date || ""}" onchange="saveCaseField('${c.id}','incident_date',this.value)" />
     <label>비위행위 내용</label><textarea onchange="saveCaseField('${c.id}','incident_content',this.value)">${escapeHtml(c.incident_content || "")}</textarea>
     ${c.additional_investigation_need !== null && c.additional_investigation_need !== undefined && subjects.length ? `
       <label>추가조사 필요성 (AI 생성)</label><textarea onchange="saveCaseField('${c.id}','additional_investigation_need',this.value)">${escapeHtml(c.additional_investigation_need || "")}</textarea>
     ` : ""}
-  `;
+  ` : "";
 
   const subjectsHtml = (subjects || []).map(s => {
     const qs = questions.filter(q => q.subject_id === s.id);
     return `
       <div class="subject-row">
         <div class="subject-row-head">
-          <input style="width:140px; margin:0;" value="${escAttr(s.name)}" onchange="saveSubjectField('${s.id}','name',this.value)" />
-          <select style="width:110px; margin:0;" onchange="saveSubjectField('${s.id}','role',this.value)">
+          <input style="width:130px; margin:0;" placeholder="이름" value="${escAttr(s.name)}" onchange="saveSubjectField('${s.id}','name',this.value)" />
+          <select style="width:100px; margin:0;" onchange="saveSubjectField('${s.id}','role',this.value)">
             ${ROLE_OPTIONS.map(r => `<option ${r === s.role ? "selected" : ""}>${r}</option>`).join("")}
           </select>
-          <input type="date" style="width:150px; margin:0;" value="${s.investigation_date || ""}" onchange="saveSubjectField('${s.id}','investigation_date',this.value)" />
+          <input type="date" style="width:145px; margin:0;" value="${s.investigation_date || ""}" onchange="saveSubjectField('${s.id}','investigation_date',this.value)" />
+          <input type="time" style="width:105px; margin:0;" value="${s.investigation_time || ""}" onchange="saveSubjectField('${s.id}','investigation_time',this.value)" />
+          <input style="width:130px; margin:0;" placeholder="조사 장소" value="${escAttr(s.location)}" onchange="saveSubjectField('${s.id}','location',this.value)" />
           <button class="btn btn-sm btn-danger" onclick="deleteSubject('${s.id}')">삭제</button>
         </div>
         <textarea placeholder="비고" style="min-height:40px;" onchange="saveSubjectField('${s.id}','memo',this.value)">${escapeHtml(s.memo || "")}</textarea>
-        <div class="small muted" style="margin:6px 0 4px;">질문지 · 답변 요약(조사 후 기록하면 보고서 초안에 반영됩니다)</div>
+        <div class="small muted" style="margin:6px 0 4px;">질문지 · 답변 요약</div>
         ${qs.map(q => `
           <div class="q-item">
             <textarea placeholder="질문" onchange="saveQuestionField('${q.id}','question',this.value)">${escapeHtml(q.question || "")}</textarea>
             <button class="btn btn-sm btn-danger" onclick="deleteQuestion('${q.id}')">✕</button>
           </div>
-          <textarea class="small" style="min-height:36px; margin-top:-4px;" placeholder="답변 요약 (조사 후 기록)" onchange="saveQuestionField('${q.id}','answer_summary',this.value)">${escapeHtml(q.answer_summary || "")}</textarea>`).join("")}
+          <textarea class="small" style="min-height:36px; margin-top:-4px;" placeholder="답변 요약" onchange="saveQuestionField('${q.id}','answer_summary',this.value)">${escapeHtml(q.answer_summary || "")}</textarea>`).join("")}
         <button class="btn btn-sm" onclick="addQuestion('${s.id}','${c.id}')">+ 질문 추가</button>
       </div>`;
   }).join("");
 
   panel.innerHTML = `
-    <div class="section-title">사건 정보</div>
-    ${ownerHtml}
-    ${inputFieldsHtml}
-    ${investigatorsHtml}
+    ${isHarassment ? (caseInfoHtml + preInterviewHtml + investigatorsHtml) : (inputFieldsHtml + investigatorsHtml)}
 
-    <div class="section-title">조사대상자 · 질문지 ${c.plan_accepted ? "<span class='badge badge-green'>확정됨</span>" : ""}</div>
+    <div class="section-title" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+      <span>조사대상자 · 질문지 ${c.plan_accepted ? "<span class='badge badge-green'>확정됨</span>" : ""}</span>
+      ${subjects && subjects.length ? `<button type="button" class="btn btn-sm" onclick="openSubjectAttachModal('${c.id}')">📎 파일 첨부</button>` : ""}
+    </div>
     ${(!subjects || subjects.length === 0) ? `
       <button class="btn btn-primary" id="genPlanBtn" onclick="generatePlan('${c.id}')">🪄 AI로 조사계획 생성</button>
       <span id="genPlanStatus"></span>
@@ -651,10 +695,13 @@ async function renderInvDetail() {
       <div class="action-bar">
         ${!c.plan_accepted ? `<button class="btn" onclick="generatePlan('${c.id}')">🔄 AI로 다시 생성</button>` : ""}
         <button class="btn" onclick="exportPlanExcel('${c.id}')">📊 엑셀 다운로드</button>
+        <button class="btn" onclick="openSubjectExportModal('${c.id}')">🖨️ 출력 (Word)</button>
         ${c.plan_accepted
           ? `<button class="btn" onclick="setPlanAccepted('${c.id}', false)">수정하기 (잠금 해제)</button>`
           : `<button class="btn btn-primary" onclick="setPlanAccepted('${c.id}', true)">✅ 수락 (확정)</button>`}
       </div>
+      <div class="small muted" style="margin:14px 0 4px;">첨부목록 (녹취록 · 조사일지 · 증빙자료)</div>
+      ${attachmentListHtml(subjectFileAttachments, a => attachmentSubjectLabel(a, subjects))}
     `}
   `;
 }
@@ -709,11 +756,16 @@ async function generatePlan(caseId) {
 유형: ${TYPE_LABEL[c.case_type]}
 부서: ${c.department || "미상"}
 신고인: ${c.reporter || "미상"}
+피신고인(기재됨): ${c.accused || "미상"}
 신고일자: ${c.report_date || "미상"}
 신고내용: ${c.report_content || "(내용 없음)"}
-
-위 신고내용을 바탕으로 아래 JSON 스키마로 조사계획을 작성하세요.
-신고인은 반드시 조사대상자에 role="신고인"으로 포함하고, 피신고인은 신고내용에서 특정 가능하면 이름을 채우고 불가능하면 "(성명 확인 필요)"로 표기하세요. 목격자/참고인은 신고내용에서 언급된 인물이 있으면 포함하세요.
+${c.pre_interview_content ? `
+사전 면담 정보:
+- 면담자: ${c.pre_interview_interviewer || "미상"} / 피면담자: ${c.pre_interview_interviewee || "미상"} / 면담일자: ${c.pre_interview_date || "미상"} / 면담장소: ${c.pre_interview_location || "미상"}
+- 면담내용: ${c.pre_interview_content}
+` : ""}
+위 신고내용(및 사전 면담 정보가 있다면 함께)을 바탕으로 아래 JSON 스키마로 조사계획을 작성하세요.
+신고인은 반드시 조사대상자에 role="신고인"으로 포함하고, 피신고인이 기재되어 있으면 그 이름 그대로 각각 role="피신고인"으로 포함하세요(기재된 피신고인이 없고 신고내용에서 특정 가능하면 이름을 채우고, 특정도 불가능하면 "(성명 확인 필요)"로 표기). 목격자/참고인은 신고내용·사전면담에서 언급된 인물이 있으면 포함하세요.
 각 대상자별 질문은 3~6개, 사실관계 확인에 실제로 필요한 구체적 질문으로 작성하세요.
 
 {"subjects":[{"name":"","role":"신고인|피신고인|참고인|목격자","investigation_date":"","memo":"","questions":[{"question":"","intent":""}]}]}
@@ -1175,7 +1227,10 @@ function requireApiKey() {
   return true;
 }
 
-async function callClaude(systemPrompt, userPrompt) {
+// fileBlock: 첨부파일을 텍스트로 뽑을 수 없을 때(예: PDF) 원본을 그대로 AI에 보내기 위한
+// Claude API document 콘텐츠 블록. 있으면 userPrompt 텍스트와 함께 보냄.
+async function callClaude(systemPrompt, userPrompt, fileBlock) {
+  const content = fileBlock ? [fileBlock, { type: "text", text: userPrompt }] : userPrompt;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -1188,7 +1243,7 @@ async function callClaude(systemPrompt, userPrompt) {
       model: model,
       max_tokens: 16000,
       system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }]
+      messages: [{ role: "user", content }]
     })
   });
   if (!res.ok) {
@@ -1215,6 +1270,358 @@ function extractJSON(text) {
   } catch (e) {
     console.error("AI 원본 응답(JSON 파싱 실패):", text);
     throw new Error("AI 응답을 해석하지 못했습니다. 다시 시도해보세요. (콘솔에 원본 응답 출력됨)");
+  }
+}
+
+/* ============================================================
+   첨부파일 (Supabase Storage 'case-files' 버킷, 비공개 — 서명 URL로만 열람)
+   ============================================================ */
+const ATTACH_BUCKET = "case-files";
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+async function uploadCaseFile(caseId, section, subjectId, file) {
+  const safeName = file.name.replace(/[^\w.\-가-힣 ]/g, "_");
+  const path = `${caseId}/${section}/${Date.now()}_${safeName}`;
+  const { error: upErr } = await sb.storage.from(ATTACH_BUCKET).upload(path, file);
+  if (upErr) throw new Error("업로드 실패: " + upErr.message + " (Supabase에 'case-files' Storage 버킷이 없다면 관리자에게 SQL 실행을 요청하세요)");
+  const { data, error } = await sb.from("hr_case_attachments").insert({
+    case_id: caseId, subject_id: subjectId || null, section,
+    file_name: file.name, storage_path: path, uploaded_by: (session && session.user && session.user.email) || ""
+  }).select().single();
+  if (error) throw new Error("첨부파일 기록 실패: " + error.message);
+  return data;
+}
+
+async function openAttachmentUrl(storagePath) {
+  const { data, error } = await sb.storage.from(ATTACH_BUCKET).createSignedUrl(storagePath, 300);
+  if (error) { showToast("파일 열기 실패: " + error.message); return; }
+  window.open(data.signedUrl, "_blank");
+}
+
+async function downloadAttachment(storagePath, fileName) {
+  const { data, error } = await sb.storage.from(ATTACH_BUCKET).download(storagePath);
+  if (error) { showToast("다운로드 실패: " + error.message); return; }
+  downloadBlob(data, fileName);
+}
+
+async function deleteAttachment(id, storagePath) {
+  if (!confirm("이 첨부파일을 삭제할까요?")) return;
+  await sb.storage.from(ATTACH_BUCKET).remove([storagePath]);
+  await sb.from("hr_case_attachments").delete().eq("id", id);
+  renderInvDetail();
+}
+
+// 첨부파일 목록 HTML — labelFn(att) 으로 표기할 이름을 커스터마이즈 가능 (기본은 원본 파일명)
+function attachmentListHtml(list, labelFn) {
+  if (!list || !list.length) return "<p class='small muted' style='margin-bottom:12px;'>첨부된 파일이 없습니다.</p>";
+  return `<ul class="attach-list">${list.map(a => `
+    <li>
+      <a href="#" onclick="event.preventDefault(); openAttachmentUrl('${a.storage_path}')" title="새 창에서 열기">📎 ${escapeHtml(labelFn ? labelFn(a) : a.file_name)}</a>
+      <span style="display:flex; gap:6px; flex-shrink:0;">
+        <button type="button" class="btn btn-sm" onclick="downloadAttachment('${a.storage_path}', decodeURIComponent('${encodeURIComponent(a.file_name)}'))">다운로드</button>
+        <button type="button" class="btn btn-sm btn-danger" onclick="deleteAttachment('${a.id}','${a.storage_path}')">삭제</button>
+      </span>
+    </li>`).join("")}</ul>`;
+}
+
+function attachmentSubjectLabel(a, subjects) {
+  const subj = (subjects || []).find(s => s.id === a.subject_id);
+  const dateStr = (a.uploaded_at || "").slice(0, 10);
+  if (a.section === "transcript") return `녹취록_${subj ? subj.name : "미지정"}_${dateStr}`;
+  if (a.section === "investigation_log") return `조사일지_${subj ? subj.name : "미지정"}_${dateStr}`;
+  return a.file_name;
+}
+
+// 첨부파일에서 텍스트를 뽑아낼 수 있으면 문자열을, 없으면(예: pdf/이미지) null을 반환.
+async function extractFileText(file) {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".txt") || name.endsWith(".md") || name.endsWith(".csv")) {
+    return await file.text();
+  }
+  if (name.endsWith(".docx") && typeof mammoth !== "undefined") {
+    const buf = await file.arrayBuffer();
+    const result = await mammoth.extractRawText({ arrayBuffer: buf });
+    return result.value || "";
+  }
+  return null;
+}
+
+async function fileToBase64(file) {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+// AI가 읽을 수 있는 형태(추출된 텍스트 or PDF 원본 블록)를 준비. 지원 안 되는 형식이면 null 반환.
+async function prepareFileForAi(file) {
+  const text = await extractFileText(file);
+  if (text !== null) return { promptExtra: text.slice(0, 20000), fileBlock: null };
+  if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+    const b64 = await fileToBase64(file);
+    return { promptExtra: "", fileBlock: { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } } };
+  }
+  return null; // 지원 안 되는 형식 (txt/docx/pdf만 지원)
+}
+
+/* ---- 사건정보 / 사전면담: 파일 첨부 + "본문에 반영할까요?" 팝업 ---- */
+function attachFileFlow(caseId, section, targetField) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    showToast("파일 업로드 중…");
+    try {
+      await uploadCaseFile(caseId, section, null, file);
+      showToast("파일이 첨부되었습니다");
+      openAiReflectPopup(caseId, section, targetField, file);
+    } catch (e) {
+      showToast(e.message);
+      renderInvDetail();
+    }
+  };
+  input.click();
+}
+
+function openAiReflectPopup(caseId, section, targetField, file) {
+  pendingReflectFile = file;
+  const label = section === "case_info" ? "신고 내용" : "사전 면담 내용";
+  const box = document.getElementById("caseModalContent");
+  box.innerHTML = `
+    <h2>파일 내용을 본문에 반영하시겠습니까?</h2>
+    <p class="muted">첨부하신 "${escapeHtml(file.name)}" 파일 내용을 기준으로 AI가 "${label}"을 자동으로 작성합니다. 원치 않으면 "아니오"를 눌러 직접 입력하세요.</p>
+    <p class="small muted">(지원 형식: txt, docx, pdf — 그 외 형식은 첨부만 되고 자동 작성은 지원되지 않습니다)</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="pendingReflectFile=null; closeCaseModal(); renderInvDetail();">아니오</button>
+      <button class="btn btn-primary" id="aiReflectYesBtn" onclick="runAiReflect('${caseId}','${section}','${targetField}')">예</button>
+    </div>
+  `;
+  document.getElementById("caseModal").classList.remove("hidden");
+}
+
+async function runAiReflect(caseId, section, targetField) {
+  const file = pendingReflectFile;
+  if (!file) return;
+  if (!requireApiKey()) return;
+  const btn = document.getElementById("aiReflectYesBtn");
+  if (btn) btn.disabled = true;
+  showToast("AI가 파일 내용을 분석하는 중입니다…");
+  try {
+    const prepared = await prepareFileForAi(file);
+    if (!prepared) {
+      showToast("이 파일 형식은 AI 자동 인식을 지원하지 않습니다 (txt/docx/pdf만 지원). 파일은 첨부되었으니 직접 입력해주세요.");
+      return;
+    }
+    const label = section === "case_info" ? "신고 내용" : "사전 면담 내용";
+    const sys = `당신은 한국 노동법(근로기준법, 남녀고용평등법)에 정통한 사내 인사팀 조사관입니다. 첨부된 자료를 바탕으로 "${label}" 항목에 들어갈 내용을 사실관계 위주로 정리해 작성하세요. 자료에 없는 내용은 절대 추측하거나 지어내지 마세요. 다른 설명 없이 본문 내용만 출력하세요.`;
+    const userMsg = `아래는 "${label}"을 작성하기 위한 참고 자료입니다.\n\n${prepared.promptExtra}\n\n위 자료를 바탕으로 "${label}"에 들어갈 내용을 정리해 작성해주세요.`;
+    const raw = await callClaude(sys, userMsg, prepared.fileBlock);
+    await sb.from("hr_case_cases").update({ [targetField]: raw.trim() }).eq("id", caseId);
+    await refreshCases();
+    showToast("AI가 내용을 반영했습니다. 확인 후 필요하면 직접 수정하세요.");
+  } catch (e) {
+    showToast("반영 실패: " + e.message);
+  } finally {
+    pendingReflectFile = null;
+    closeCaseModal();
+    renderInvDetail();
+  }
+}
+
+/* ---- 다중 피신고인 입력 ---- */
+function accusedInputsHtml(caseId, accusedText) {
+  const names = (accusedText || "").split(",").map(s => s.trim()).filter(Boolean);
+  const rows = names.length ? names : [""];
+  return `<div id="accusedInputs">${rows.map(n => `
+    <div style="display:flex; gap:6px; margin-bottom:6px;">
+      <input value="${escAttr(n)}" placeholder="피신고인 이름" oninput="syncAccusedField('${caseId}')" style="margin:0;" />
+      <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove(); syncAccusedField('${caseId}')">✕</button>
+    </div>`).join("")}</div>`;
+}
+
+function addAccusedInput(caseId) {
+  const wrap = document.getElementById("accusedInputs");
+  if (!wrap) return;
+  const div = document.createElement("div");
+  div.style.cssText = "display:flex; gap:6px; margin-bottom:6px;";
+  div.innerHTML = `<input placeholder="피신고인 이름" oninput="syncAccusedField('${caseId}')" style="margin:0;" />
+    <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove(); syncAccusedField('${caseId}')">✕</button>`;
+  wrap.appendChild(div);
+  div.querySelector("input").focus();
+}
+
+let accusedSaveTimer = null;
+function syncAccusedField(caseId) {
+  const wrap = document.getElementById("accusedInputs");
+  if (!wrap) return;
+  const names = Array.from(wrap.querySelectorAll("input")).map(i => i.value.trim()).filter(Boolean);
+  clearTimeout(accusedSaveTimer);
+  accusedSaveTimer = setTimeout(async () => {
+    await sb.from("hr_case_cases").update({ accused: names.join(", ") }).eq("id", caseId);
+    await refreshCases();
+  }, 600);
+}
+
+/* ---- 사전 면담 접기/펼치기 ---- */
+function togglePreInterview() {
+  preInterviewExpanded = !preInterviewExpanded;
+  renderInvDetail();
+}
+
+/* ---- 조사대상자·질문지: 파일 첨부(녹취록/조사일지/증빙자료) ---- */
+async function openSubjectAttachModal(caseId) {
+  const { data: subjects } = await sb.from("hr_case_subjects").select("*").eq("case_id", caseId).order("order_index");
+  const box = document.getElementById("caseModalContent");
+  box.innerHTML = `
+    <h2>파일 첨부</h2>
+    <label>파일 종류</label>
+    <select id="satType">
+      <option value="transcript">녹취록 (AI가 질문지·답변에 대화형식으로 자동 반영)</option>
+      <option value="investigation_log">조사일지 (내용 반영 없이 파일 그대로 저장)</option>
+      <option value="evidence">증빙자료 (내용 반영 없이 파일 그대로 저장)</option>
+    </select>
+    <label>관련 조사대상자 (증빙자료는 선택 안 해도 됨)</label>
+    <select id="satSubject">
+      <option value="">(선택 안 함)</option>
+      ${(subjects || []).map(s => `<option value="${s.id}">${escapeHtml(s.name)} (${escapeHtml(s.role || "")})</option>`).join("")}
+    </select>
+    <label>파일 선택</label>
+    <input type="file" id="satFile" />
+    <p class="small muted">녹취록 자동 반영은 txt/docx/pdf 형식만 지원됩니다.</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeCaseModal()">취소</button>
+      <button class="btn btn-primary" onclick="submitSubjectAttach('${caseId}')">업로드</button>
+    </div>
+  `;
+  document.getElementById("caseModal").classList.remove("hidden");
+}
+
+async function submitSubjectAttach(caseId) {
+  const type = document.getElementById("satType").value;
+  const subjectId = document.getElementById("satSubject").value || null;
+  const file = document.getElementById("satFile").files[0];
+  if (!file) { showToast("파일을 선택해주세요"); return; }
+  if (type !== "evidence" && !subjectId) { showToast("녹취록/조사일지는 관련 조사대상자를 선택해야 합니다"); return; }
+  showToast("업로드 중…");
+  try {
+    await uploadCaseFile(caseId, type, subjectId, file);
+    if (type === "transcript") {
+      closeCaseModal();
+      await runTranscriptReflect(caseId, subjectId, file);
+    } else {
+      showToast("파일이 저장되었습니다");
+      closeCaseModal();
+      renderInvDetail();
+    }
+  } catch (e) {
+    showToast(e.message);
+  }
+}
+
+async function runTranscriptReflect(caseId, subjectId, file) {
+  if (!requireApiKey()) return;
+  showToast("AI가 녹취록에서 질문·답변을 정리하는 중입니다…");
+  try {
+    const { data: subj } = await sb.from("hr_case_subjects").select("*").eq("id", subjectId).single();
+    const { data: existingQs } = await sb.from("hr_case_questions").select("*").eq("subject_id", subjectId).order("order_index");
+    const prepared = await prepareFileForAi(file);
+    if (!prepared) {
+      showToast("이 파일 형식은 AI 자동 인식을 지원하지 않습니다 (txt/docx/pdf만 지원). 파일은 저장되었습니다.");
+      renderInvDetail();
+      return;
+    }
+    const existingList = (existingQs || []).map(q => q.question).filter(Boolean);
+    const existingHint = existingList.length
+      ? `\n\n기존에 준비된 질문 목록(참고용 — 녹취록에 해당 답변이 있으면 반영하고, 없으면 생략해도 됩니다):\n${existingList.map((q, i) => `${i + 1}. ${q}`).join("\n")}`
+      : "";
+    const sys = `당신은 한국 노동법에 정통한 사내 인사팀 조사관입니다. 면담 녹취록을 읽고 "${subj ? subj.name : ""}"(${subj ? subj.role : ""})에 대한 질문과 답변을 대화형식으로 정리합니다. 녹취록에 없는 내용은 절대 지어내지 마세요. 반드시 JSON 객체 하나만 출력하고 다른 설명은 출력하지 마세요.`;
+    const userMsg = `아래는 "${subj ? subj.name : ""}" 조사대상자와의 면담 녹취록입니다.\n\n${prepared.promptExtra}${existingHint}\n\n녹취록 내용을 바탕으로 질문·답변을 정리해 아래 JSON 스키마로 출력하세요. answer_summary는 실제 발언 내용을 대화형식(진술체)으로 정리하세요.\n\n{"qa":[{"question":"","answer_summary":""}]}`;
+    const raw = await callClaude(sys, userMsg, prepared.fileBlock);
+    const result = extractJSON(raw);
+    const qaList = result.qa || [];
+    if (!qaList.length) { showToast("녹취록에서 질문·답변을 추출하지 못했습니다."); return; }
+    await sb.from("hr_case_questions").delete().eq("subject_id", subjectId);
+    let idx = 0;
+    for (const qa of qaList) {
+      await sb.from("hr_case_questions").insert({
+        case_id: caseId, subject_id: subjectId, order_index: idx++,
+        question: qa.question || "", answer_summary: qa.answer_summary || ""
+      });
+    }
+    showToast(`녹취록 반영 완료 (${qaList.length}개 문답) — 기존 질문지는 녹취록 내용으로 교체되었습니다. 확인해주세요.`);
+  } catch (e) {
+    showToast("녹취록 반영 실패: " + e.message);
+  } finally {
+    renderInvDetail();
+  }
+}
+
+/* ---- 조사대상자별 질문지 Word 출력 ---- */
+function buildSubjectWordBlob(c, s, qs) {
+  const header = `사건명: ${c.case_name}\n이름: ${s.name || ""}\n구분: ${s.role || ""}\n조사일시: ${s.investigation_date || ""} ${s.investigation_time || ""}\n조사장소: ${s.location || ""}\n`;
+  const qaText = (qs || []).map((q, i) => `${i + 1}. ${q.question || ""}\n   → ${q.answer_summary || "(답변 미기재)"}`).join("\n\n");
+  return buildWordDocBlob(`조사일지 — ${s.name || ""}`, header + "\n" + qaText);
+}
+
+async function openSubjectExportModal(caseId) {
+  const { data: subjects } = await sb.from("hr_case_subjects").select("*").eq("case_id", caseId).order("order_index");
+  if (!subjects || !subjects.length) { showToast("조사대상자가 없습니다"); return; }
+  const box = document.getElementById("caseModalContent");
+  box.innerHTML = `
+    <h2>조사대상자별 질문지 출력</h2>
+    <p class="muted small">Word 파일로 다운로드할 조사대상자를 선택하세요.</p>
+    ${subjects.map(s => `
+      <label style="display:flex; align-items:center; gap:8px; font-weight:normal; color:var(--text);">
+        <input type="checkbox" class="satExportChk" value="${s.id}" checked style="width:auto; margin:0;" /> ${escapeHtml(s.name)} (${escapeHtml(s.role || "")})
+      </label>`).join("")}
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeCaseModal()">취소</button>
+      <button class="btn btn-primary" onclick="runSubjectExport('${caseId}')">다운로드</button>
+    </div>
+  `;
+  document.getElementById("caseModal").classList.remove("hidden");
+}
+
+async function runSubjectExport(caseId) {
+  const c = casesCache.find(x => x.id === caseId);
+  const ids = Array.from(document.querySelectorAll(".satExportChk:checked")).map(el => el.value);
+  if (!ids.length) { showToast("조사대상자를 1명 이상 선택하세요"); return; }
+  closeCaseModal();
+  showToast("Word 파일 생성 중…");
+  try {
+    const { data: subjects } = await sb.from("hr_case_subjects").select("*").in("id", ids);
+    const { data: questions } = await sb.from("hr_case_questions").select("*").in("subject_id", ids).order("order_index");
+    if (ids.length === 1) {
+      const s = subjects[0];
+      const blob = buildSubjectWordBlob(c, s, (questions || []).filter(q => q.subject_id === s.id));
+      downloadBlob(blob, `${c.case_name}_${s.name}_질문지.doc`);
+    } else {
+      const zip = new JSZip();
+      subjects.forEach(s => {
+        const blob = buildSubjectWordBlob(c, s, (questions || []).filter(q => q.subject_id === s.id));
+        zip.file(`${c.case_name}_${s.name}_질문지.doc`, blob);
+      });
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      downloadBlob(zipBlob, `${c.case_name}_조사대상자별_질문지.zip`);
+    }
+    showToast("다운로드 완료");
+  } catch (e) {
+    showToast("다운로드 실패: " + e.message);
   }
 }
 
