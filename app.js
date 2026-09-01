@@ -655,6 +655,21 @@ async function renderInvDetail() {
 
   const subjectsHtml = (subjects || []).map(s => {
     const qs = questions.filter(q => q.subject_id === s.id);
+    let lastTopic = undefined; // 진술서 Word 출력과 동일하게, 주제(topic)가 바뀔 때만 그룹 제목을 보여줌
+    const qaHtml = qs.map(q => {
+      const topic = (q.topic || "").trim();
+      const topicHeader = topic !== lastTopic ? `<div class="small" style="font-weight:700; margin:10px 0 2px;">${escapeHtml(topic || "(주제 미지정)")}</div>` : "";
+      lastTopic = topic;
+      return topicHeader + `
+        <div class="q-item">
+          <div style="flex:1;">
+            <input class="small" style="margin-bottom:4px;" placeholder="주제 (예: 담당 업무 — Word 출력 시 이 기준으로 묶입니다)" value="${escAttr(q.topic)}" onchange="saveQuestionField('${q.id}','topic',this.value)" />
+            <textarea placeholder="질문" onchange="saveQuestionField('${q.id}','question',this.value)">${escapeHtml(q.question || "")}</textarea>
+            <textarea class="small" style="min-height:36px;" placeholder="답변 요약" onchange="saveQuestionField('${q.id}','answer_summary',this.value)">${escapeHtml(q.answer_summary || "")}</textarea>
+          </div>
+          <button class="btn btn-sm btn-danger" onclick="deleteQuestion('${q.id}')">✕</button>
+        </div>`;
+    }).join("");
     return `
       <div class="subject-row">
         <div class="subject-row-head">
@@ -667,14 +682,16 @@ async function renderInvDetail() {
           <input style="width:130px; margin:0;" placeholder="조사 장소" value="${escAttr(s.location)}" onchange="saveSubjectField('${s.id}','location',this.value)" />
           <button class="btn btn-sm btn-danger" onclick="deleteSubject('${s.id}')">삭제</button>
         </div>
+        <div class="small muted" style="margin:2px 0 4px;">인적사항 (진술서 출력 시 사용 — 알고 있는 만큼만 입력해도 됩니다)</div>
+        <div class="subject-row-head">
+          <input type="date" style="width:145px; margin:0;" placeholder="생년월일" value="${s.birthdate || ""}" onchange="saveSubjectField('${s.id}','birthdate',this.value)" />
+          <input type="date" style="width:145px; margin:0;" placeholder="입사일" value="${s.join_date || ""}" onchange="saveSubjectField('${s.id}','join_date',this.value)" />
+          <input style="width:110px; margin:0;" placeholder="직책" value="${escAttr(s.position)}" onchange="saveSubjectField('${s.id}','position',this.value)" />
+          <input style="width:180px; margin:0;" placeholder="소속" value="${escAttr(s.department)}" onchange="saveSubjectField('${s.id}','department',this.value)" />
+        </div>
         <textarea placeholder="비고" style="min-height:40px;" onchange="saveSubjectField('${s.id}','memo',this.value)">${escapeHtml(s.memo || "")}</textarea>
         <div class="small muted" style="margin:6px 0 4px;">질문지 · 답변 요약</div>
-        ${qs.map(q => `
-          <div class="q-item">
-            <textarea placeholder="질문" onchange="saveQuestionField('${q.id}','question',this.value)">${escapeHtml(q.question || "")}</textarea>
-            <button class="btn btn-sm btn-danger" onclick="deleteQuestion('${q.id}')">✕</button>
-          </div>
-          <textarea class="small" style="min-height:36px; margin-top:-4px;" placeholder="답변 요약" onchange="saveQuestionField('${q.id}','answer_summary',this.value)">${escapeHtml(q.answer_summary || "")}</textarea>`).join("")}
+        ${qaHtml}
         <button class="btn btn-sm" onclick="addQuestion('${s.id}','${c.id}')">+ 질문 추가</button>
       </div>`;
   }).join("");
@@ -730,7 +747,7 @@ async function addSubject(caseId) {
   renderInvDetail();
 }
 async function addQuestion(subjectId, caseId) {
-  await sb.from("hr_case_questions").insert({ case_id: caseId, subject_id: subjectId, question: "", order_index: 999 });
+  await sb.from("hr_case_questions").insert({ case_id: caseId, subject_id: subjectId, question: "", topic: "", order_index: 999 });
   renderInvDetail();
 }
 async function setPlanAccepted(caseId, val) {
@@ -766,9 +783,9 @@ ${c.pre_interview_content ? `
 ` : ""}
 위 신고내용(및 사전 면담 정보가 있다면 함께)을 바탕으로 아래 JSON 스키마로 조사계획을 작성하세요.
 신고인은 반드시 조사대상자에 role="신고인"으로 포함하고, 피신고인이 기재되어 있으면 그 이름 그대로 각각 role="피신고인"으로 포함하세요(기재된 피신고인이 없고 신고내용에서 특정 가능하면 이름을 채우고, 특정도 불가능하면 "(성명 확인 필요)"로 표기). 목격자/참고인은 신고내용·사전면담에서 언급된 인물이 있으면 포함하세요.
-각 대상자별 질문은 3~6개, 사실관계 확인에 실제로 필요한 구체적 질문으로 작성하세요.
+각 대상자별 질문은 3~6개, 사실관계 확인에 실제로 필요한 구체적 질문으로 작성하세요. 질문은 주제별로 묶어 topic 값을 붙이세요(같은 주제의 질문은 동일한 topic).
 
-{"subjects":[{"name":"","role":"신고인|피신고인|참고인|목격자","investigation_date":"","memo":"","questions":[{"question":"","intent":""}]}]}
+{"subjects":[{"name":"","role":"신고인|피신고인|참고인|목격자","investigation_date":"","memo":"","questions":[{"topic":"","question":"","intent":""}]}]}
 ` : `
 사건명: ${c.case_name}
 부서: ${c.department || "미상"}
@@ -777,7 +794,7 @@ ${c.pre_interview_content ? `
 
 위 내용을 바탕으로 아래 JSON 스키마로 조사계획을 작성하세요. additional_investigation_need에는 현재 확인된 사실관계만으로 부족한 부분과 추가로 확인해야 할 사항을 서술하세요. 조사대상자는 관련자(행위자, 참고인, 목격자 등)를 포함하고, 이름을 알 수 없으면 "(성명 확인 필요)"로 표기하세요.
 
-{"additional_investigation_need":"","subjects":[{"name":"","role":"피신고인|참고인|목격자","investigation_date":"","memo":"","questions":[{"question":"","intent":""}]}]}
+{"additional_investigation_need":"","subjects":[{"name":"","role":"피신고인|참고인|목격자","investigation_date":"","memo":"","questions":[{"topic":"","question":"","intent":""}]}]}
 `;
     const raw = await callClaude(sys, userMsg);
     const plan = extractJSON(raw);
@@ -799,7 +816,7 @@ ${c.pre_interview_content ? `
       for (const q of (s.questions || [])) {
         await sb.from("hr_case_questions").insert({
           case_id: caseId, subject_id: newSub.id, order_index: qidx++,
-          question: q.question || "", intent: q.intent || ""
+          topic: q.topic || "", question: q.question || "", intent: q.intent || ""
         });
       }
     }
@@ -1241,7 +1258,7 @@ async function callClaude(systemPrompt, userPrompt, fileBlock) {
     },
     body: JSON.stringify({
       model: model,
-      max_tokens: 16000,
+      max_tokens: 64000,
       system: systemPrompt,
       messages: [{ role: "user", content }]
     })
@@ -1378,7 +1395,7 @@ async function fileToBase64(file) {
 // AI가 읽을 수 있는 형태(추출된 텍스트 or PDF 원본 블록)를 준비. 지원 안 되는 형식이면 null 반환.
 async function prepareFileForAi(file) {
   const text = await extractFileText(file);
-  if (text !== null) return { promptExtra: text.slice(0, 20000), fileBlock: null };
+  if (text !== null) return { promptExtra: text.slice(0, 150000), fileBlock: null };
   if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
     const b64 = await fileToBase64(file);
     return { promptExtra: "", fileBlock: { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } } };
@@ -1557,8 +1574,11 @@ async function runTranscriptReflect(caseId, subjectId, file) {
     const existingHint = existingList.length
       ? `\n\n기존에 준비된 질문 목록(참고용 — 녹취록에 해당 답변이 있으면 반영하고, 없으면 생략해도 됩니다):\n${existingList.map((q, i) => `${i + 1}. ${q}`).join("\n")}`
       : "";
-    const sys = `당신은 한국 노동법에 정통한 사내 인사팀 조사관입니다. 면담 녹취록을 읽고 "${subj ? subj.name : ""}"(${subj ? subj.role : ""})에 대한 질문과 답변을 대화형식으로 정리합니다. 녹취록에 없는 내용은 절대 지어내지 마세요. 반드시 JSON 객체 하나만 출력하고 다른 설명은 출력하지 마세요.`;
-    const userMsg = `아래는 "${subj ? subj.name : ""}" 조사대상자와의 면담 녹취록입니다.\n\n${prepared.promptExtra}${existingHint}\n\n녹취록 내용을 바탕으로 질문·답변을 정리해 아래 JSON 스키마로 출력하세요. answer_summary는 실제 발언 내용을 대화형식(진술체)으로 정리하세요.\n\n{"qa":[{"question":"","answer_summary":""}]}`;
+    const sys = `당신은 한국 노동법에 정통한 사내 인사팀 조사관입니다. 아래는 실제 면담 녹취 전문(회의 자동녹취본)입니다. "${subj ? subj.name : ""}"(${subj ? subj.role : ""})에게 조사관이 질문하고 답변한 부분만 정리합니다.
+녹취록에는 사건과 무관한 잡담, 인사말, 참석자 소개 등이 섞여 있으니 그런 부분은 제외하고, 사실관계 확인과 관련된 질문·답변만 골라내세요.
+관련된 질문·답변을 흐름상 같은 주제끼리 묶어 각 그룹에 짧고 구체적인 주제명을 붙이세요 (예: "담당 업무", "업무 관계 일반", "OO 이슈 관련" 등 — 실제 대화 내용에 맞게 직접 작성).
+답변은 실제 발언 내용을 누락 없이 충실하게 정리하되(요약하더라도 핵심 진술은 반드시 포함), 녹취록에 없는 내용은 절대 지어내지 마세요. 반드시 JSON 객체 하나만 출력하고 다른 설명은 출력하지 마세요.`;
+    const userMsg = `아래는 "${subj ? subj.name : ""}" 조사대상자와의 면담 녹취록 전문입니다.\n\n${prepared.promptExtra}${existingHint}\n\n녹취록 내용을 바탕으로 질문·답변을 주제별로 그룹핑해 아래 JSON 스키마로 출력하세요. 같은 주제의 질문·답변은 topic 값을 동일하게 맞춰서 순서대로 나열하세요.\n\n{"qa":[{"topic":"","question":"","answer_summary":""}]}`;
     const raw = await callClaude(sys, userMsg, prepared.fileBlock);
     const result = extractJSON(raw);
     const qaList = result.qa || [];
@@ -1568,7 +1588,7 @@ async function runTranscriptReflect(caseId, subjectId, file) {
     for (const qa of qaList) {
       await sb.from("hr_case_questions").insert({
         case_id: caseId, subject_id: subjectId, order_index: idx++,
-        question: qa.question || "", answer_summary: qa.answer_summary || ""
+        topic: qa.topic || "", question: qa.question || "", answer_summary: qa.answer_summary || ""
       });
     }
     showToast(`녹취록 반영 완료 (${qaList.length}개 문답) — 기존 질문지는 녹취록 내용으로 교체되었습니다. 확인해주세요.`);
@@ -1580,10 +1600,46 @@ async function runTranscriptReflect(caseId, subjectId, file) {
 }
 
 /* ---- 조사대상자별 질문지 Word 출력 ---- */
+// 첨부해주신 진술서 양식(개요 표 / 인적사항 표 / 주제별 문·답 박스)을 그대로 재현.
 function buildSubjectWordBlob(c, s, qs) {
-  const header = `사건명: ${c.case_name}\n이름: ${s.name || ""}\n구분: ${s.role || ""}\n조사일시: ${s.investigation_date || ""} ${s.investigation_time || ""}\n조사장소: ${s.location || ""}\n`;
-  const qaText = (qs || []).map((q, i) => `${i + 1}. ${q.question || ""}\n   → ${q.answer_summary || "(답변 미기재)"}`).join("\n\n");
-  return buildWordDocBlob(`조사일지 — ${s.name || ""}`, header + "\n" + qaText);
+  const title = `${TYPE_LABEL[c.case_type] || "비위행위"} 사건 ${s.role || ""} 진술서`;
+  const dtStr = [s.investigation_date || "", s.investigation_time || ""].filter(Boolean).join(" ") || "-";
+
+  const overviewTable = `
+    <table>
+      <tr><td class="stmt-label">인터뷰 일시</td><td>${escapeHtml(dtStr)}</td><td class="stmt-label">인터뷰 장소</td><td>${escapeHtml(s.location || "-")}</td></tr>
+      <tr><td class="stmt-label">인터뷰어</td><td>${escapeHtml(c.investigators || "-")}</td><td class="stmt-label">인터뷰이</td><td>${escapeHtml(s.name || "-")}</td></tr>
+    </table>`;
+
+  const profileTable = `
+    <table>
+      <tr><td class="stmt-label">이름</td><td>${escapeHtml(s.name || "-")}</td><td class="stmt-label">생년월일</td><td>${escapeHtml(s.birthdate || "-")}</td></tr>
+      <tr><td class="stmt-label">입사일</td><td>${escapeHtml(s.join_date || "-")}</td><td class="stmt-label">직책</td><td>${escapeHtml(s.position || "-")}</td></tr>
+      <tr><td class="stmt-label">소속</td><td colspan="3">${escapeHtml(s.department || "-")}</td></tr>
+    </table>`;
+
+  // 질문·답변을 topic(주제) 기준으로 순서 유지하며 그룹핑 (topic이 비어있으면 "기타"로 묶음)
+  const groups = [];
+  (qs || []).forEach(q => {
+    const topic = (q.topic || "").trim() || "기타";
+    const last = groups[groups.length - 1];
+    if (last && last.topic === topic) last.items.push(q);
+    else groups.push({ topic, items: [q] });
+  });
+
+  const factsHtml = groups.map((g, i) => `
+    <div class="stmt-topic">(${i + 1}) ${escapeHtml(g.topic)}</div>
+    <table class="stmt-qa"><tr><td>
+      ${g.items.map(q => `문. ${nl2br(escapeHtml(q.question || ""))}<br><br>답. ${nl2br(escapeHtml(q.answer_summary || "(답변 미기재)"))}`).join("<br><br>")}
+    </td></tr></table>`).join("");
+
+  const bodyHtml = `
+    <p><b>1. 개요</b></p>${overviewTable}
+    <p><b>2. 인터뷰이 인적 사항</b></p>${profileTable}
+    <p><b>3. 사실 관계 조사</b></p>${factsHtml || "<p>(등록된 질문·답변 없음)</p>"}
+    <p style="margin-top:24pt;">${escapeHtml(s.investigation_date || "")}</p>
+  `;
+  return wrapWordHtml(title, bodyHtml);
 }
 
 async function openSubjectExportModal(caseId) {
@@ -1637,18 +1693,28 @@ async function runSubjectExport(caseId) {
    Word export (HTML→.doc 트릭, 실제 Word에서 정상적으로 열립니다)
    ============================================================ */
 // .doc(HTML 기반) Blob을 만들어 반환 — 단독 다운로드와 zip 묶음 다운로드에서 공용으로 사용.
-function buildWordDocBlob(title, contentText) {
-  const bodyHtml = String(contentText || "").split(/\n+/).map(line =>
-    `<p style="margin:0 0 10px 0; line-height:1.7;">${escapeHtml(line) || "&nbsp;"}</p>`
-  ).join("");
+// title/bodyHtml을 MS Word가 인식하는 HTML 문서(.doc)로 감싼다. 표(<table>) 등 임의의 HTML을 그대로 사용 가능.
+function wrapWordHtml(title, bodyHtml) {
   const html = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
 <head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
 <style>
   body { font-family:'맑은 고딕', sans-serif; font-size:11pt; }
   h1 { font-size:16pt; text-align:center; margin-bottom:20pt; }
+  table { border-collapse: collapse; width:100%; margin-bottom:14pt; }
+  td, th { border:1px solid #000; padding:6pt 8pt; vertical-align:top; font-size:10.5pt; }
+  .stmt-label { background:#f2f2f2; font-weight:bold; width:110pt; }
+  .stmt-topic { font-weight:bold; font-size:12pt; margin:14pt 0 6pt; }
+  .stmt-qa td { padding:8pt; line-height:1.6; }
 </style></head>
 <body><h1>${escapeHtml(title)}</h1>${bodyHtml}</body></html>`;
   return new Blob(["﻿", html], { type: "application/msword" });
+}
+
+function buildWordDocBlob(title, contentText) {
+  const bodyHtml = String(contentText || "").split(/\n+/).map(line =>
+    `<p style="margin:0 0 10px 0; line-height:1.7;">${escapeHtml(line) || "&nbsp;"}</p>`
+  ).join("");
+  return wrapWordHtml(title, bodyHtml);
 }
 
 function downloadWordDoc(filename, title, contentText) {
