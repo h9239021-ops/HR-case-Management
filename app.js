@@ -964,21 +964,34 @@ function uploadReportFile(caseId) {
 
       if (!requireApiKey()) return;
       showToast("보고서 내용을 분석하는 중입니다…");
+      // JSON 형식으로 받으면 본문에 인용부호(")가 섞여 있을 때 파싱이 깨지기 쉬워서,
+      // 따옴표 이슈가 없는 구분자(===항목명===) 형식으로 받는다.
       const analyzeSys = `당신은 인사노무 조사보고서를 검토하는 HR 담당자입니다. 주어진 조사결과보고서 본문을 읽고 아래 두 항목을 문서에 적힌 내용을 근거로 간결하게 정리하세요.
-- acknowledgment: "${ackLabel}" — 문서상 비위행위/괴롭힘·성희롱 해당 여부에 대한 결론(인정/불인정/일부인정 등)과 그 핵심 근거를 간결히 요약. 문서에 명시적인 결론이 없으면 조사된 사실관계를 바탕으로 한 판단을 간결히 제시.
-- discipline_review: 징계수준 검토의견 — 문서에 적힌 징계 수위(예: 견책/감봉/정직/해고 등) 검토 의견이나 그 근거를 간결히 요약. 문서에 명시적으로 없으면 빈 문자열로 둠.
-반드시 아래 JSON 형식으로만 답하세요. 다른 설명, 마크다운, 코드블록 기호를 절대 붙이지 마세요.
-{"acknowledgment": "...", "discipline_review": "..."}`;
+- ${ackLabel}: 문서상 비위행위/괴롭힘·성희롱 해당 여부에 대한 결론(인정/불인정/일부인정 등)과 그 핵심 근거를 간결히 요약. 문서에 명시적인 결론이 없으면 조사된 사실관계를 바탕으로 한 판단을 간결히 제시.
+- 징계수준 검토의견: 문서에 적힌 징계 수위(예: 견책/감봉/정직/해고 등) 검토 의견이나 그 근거를 간결히 요약. 문서에 명시적으로 없으면 비워둠.
+
+반드시 아래 형식 그대로만 출력하세요. 각 구분선(===...===)은 토씨 하나 바꾸지 말고 정확히 그대로 쓰고, 그 외 다른 설명·인사말·마크다운·코드블록 기호는 절대 넣지 마세요. 내용에 따옴표나 특수문자가 있어도 그대로 적으면 됩니다.
+===ACK===
+(여기에 ${ackLabel} 내용)
+===DISC===
+(여기에 징계수준 검토의견 내용, 없으면 비워둠)
+===END===`;
       const analyzeUser = `다음은 조사결과보고서 본문입니다:\n\n${content.slice(0, 120000)}`;
       let acknowledgment = "", discipline_review = "";
+      let analyzeErrorMsg = "";
       try {
         const aiRes = await callClaude(analyzeSys, analyzeUser);
-        const parsed = extractJSON(aiRes);
-        acknowledgment = parsed.acknowledgment || "";
-        discipline_review = parsed.discipline_review || "";
+        const ackMatch = aiRes.match(/===ACK===([\s\S]*?)===DISC===/);
+        const discMatch = aiRes.match(/===DISC===([\s\S]*?)===END===/);
+        if (!ackMatch && !discMatch) {
+          console.error("보고서 분석 원본 응답(구분자 없음):", aiRes);
+          throw new Error("AI 응답 형식을 해석하지 못했습니다.");
+        }
+        acknowledgment = (ackMatch ? ackMatch[1] : "").trim();
+        discipline_review = (discMatch ? discMatch[1] : "").trim();
       } catch (e) {
         console.error("보고서 분석 실패:", e);
-        showToast("본문은 반영했지만 인정여부/징계수준 검토의견 자동분석에는 실패했습니다. 직접 입력해주세요.");
+        analyzeErrorMsg = e.message || String(e);
       }
 
       await sb.from("hr_case_cases").update({
@@ -988,7 +1001,11 @@ function uploadReportFile(caseId) {
         status: "보고서작성"
       }).eq("id", caseId);
       await refreshCases();
-      showToast("업로드한 파일 내용을 보고서 본문에 반영하고, 인정여부·징계수준 검토의견도 자동 기재했습니다. 확인 후 필요하면 직접 수정하세요.");
+      if (analyzeErrorMsg) {
+        showToast("본문은 반영했지만 자동분석 실패: " + analyzeErrorMsg + " — 인정여부/징계수준 검토의견은 직접 입력해주세요.");
+      } else {
+        showToast("업로드한 파일 내용을 보고서 본문에 반영하고, 인정여부·징계수준 검토의견도 자동 기재했습니다. 확인 후 필요하면 직접 수정하세요.");
+      }
       renderReportDetail();
     } catch (e) {
       showToast("업로드 실패: " + e.message);
