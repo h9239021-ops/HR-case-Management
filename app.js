@@ -913,6 +913,7 @@ async function renderReportDetail() {
     ${!c.report_draft ? `
       <p class="muted">조사대상자/질문지 확정 후 보고서를 생성하세요. (미확정이어도 생성은 가능합니다)</p>
       <button class="btn btn-primary" id="genReportBtn" onclick="generateReport('${c.id}')">🪄 AI로 조사결과보고서 작성</button>
+      <button class="btn" onclick="uploadReportFile('${c.id}')">📎 직접 작성한 파일 업로드</button>
     ` : `
       <label>보고서 본문 ${c.report_confirmed ? "<span class='badge badge-green'>확정됨</span>" : ""}</label>
       <textarea id="reportDraftInput" style="min-height:320px;" ${c.report_confirmed ? "disabled" : ""} onchange="saveCaseField('${c.id}','report_draft',this.value)">${escapeHtml(c.report_draft || "")}</textarea>
@@ -925,6 +926,7 @@ async function renderReportDetail() {
 
       <div class="action-bar">
         ${!c.report_confirmed ? `<button class="btn" onclick="generateReport('${c.id}')">🔄 AI로 다시 생성</button>` : ""}
+        ${!c.report_confirmed ? `<button class="btn" onclick="uploadReportFile('${c.id}')">📎 파일로 교체 업로드</button>` : ""}
         <button class="btn" onclick="exportReportWord('${c.id}')">📄 Word로 내보내기</button>
         ${c.report_confirmed
           ? `<button class="btn" onclick="setReportConfirmed('${c.id}', false)">수정하기 (확정 해제)</button>`
@@ -932,6 +934,39 @@ async function renderReportDetail() {
       </div>
     `}
   `;
+}
+
+// 직접 작성한 보고서 파일(txt/docx/pdf)을 업로드하면 AI 생성 없이 그 내용을 그대로 보고서 본문으로 사용한다.
+function uploadReportFile(caseId) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    showToast("파일을 불러오는 중입니다…");
+    try {
+      let content = await extractFileText(file);
+      if (content === null) {
+        const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+        if (!isPdf) {
+          showToast("이 파일 형식은 지원하지 않습니다 (txt/docx/pdf만 가능합니다).");
+          return;
+        }
+        if (!requireApiKey()) return;
+        const b64 = await fileToBase64(file);
+        const fileBlock = { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } };
+        const sys = `당신은 문서를 있는 그대로 옮겨 적는 보조원입니다. 첨부된 PDF 문서에 담긴 텍스트 전체를 요약하거나 변형하지 말고 원문 그대로 추출해서 출력하세요. 다른 설명은 절대 추가하지 마세요.`;
+        content = await callClaude(sys, "첨부된 PDF 문서의 전체 텍스트를 그대로 추출해서 출력해주세요.", fileBlock);
+      }
+      await sb.from("hr_case_cases").update({ report_draft: content, status: "보고서작성" }).eq("id", caseId);
+      await refreshCases();
+      showToast("업로드한 파일 내용을 보고서 본문에 반영했습니다. 확인 후 필요하면 직접 수정하세요.");
+      renderReportDetail();
+    } catch (e) {
+      showToast("업로드 실패: " + e.message);
+    }
+  };
+  input.click();
 }
 
 async function setReportConfirmed(caseId, val) {
