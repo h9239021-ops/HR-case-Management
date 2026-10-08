@@ -936,13 +936,16 @@ async function renderReportDetail() {
   `;
 }
 
-// 직접 작성한 보고서 파일(txt/docx/pdf)을 업로드하면 AI 생성 없이 그 내용을 그대로 보고서 본문으로 사용한다.
+// 직접 작성한 보고서 파일(txt/docx/pdf)을 업로드하면 AI 생성 없이 그 내용을 그대로 보고서 본문으로 사용하고,
+// 인정여부 / 징계수준 검토의견은 그 내용을 AI가 분석해서 자동으로 채워준다.
 function uploadReportFile(caseId) {
   const input = document.createElement("input");
   input.type = "file";
   input.onchange = async () => {
     const file = input.files[0];
     if (!file) return;
+    const c = casesCache.find(x => x.id === caseId);
+    const ackLabel = (c && c.case_category === "harassment") ? "인정여부" : "사실관계 확정";
     showToast("파일을 불러오는 중입니다…");
     try {
       let content = await extractFileText(file);
@@ -958,9 +961,34 @@ function uploadReportFile(caseId) {
         const sys = `당신은 문서를 있는 그대로 옮겨 적는 보조원입니다. 첨부된 PDF 문서에 담긴 텍스트 전체를 요약하거나 변형하지 말고 원문 그대로 추출해서 출력하세요. 다른 설명은 절대 추가하지 마세요.`;
         content = await callClaude(sys, "첨부된 PDF 문서의 전체 텍스트를 그대로 추출해서 출력해주세요.", fileBlock);
       }
-      await sb.from("hr_case_cases").update({ report_draft: content, status: "보고서작성" }).eq("id", caseId);
+
+      if (!requireApiKey()) return;
+      showToast("보고서 내용을 분석하는 중입니다…");
+      const analyzeSys = `당신은 인사노무 조사보고서를 검토하는 HR 담당자입니다. 주어진 조사결과보고서 본문을 읽고 아래 두 항목을 문서에 적힌 내용을 근거로 간결하게 정리하세요.
+- acknowledgment: "${ackLabel}" — 문서상 비위행위/괴롭힘·성희롱 해당 여부에 대한 결론(인정/불인정/일부인정 등)과 그 핵심 근거를 간결히 요약. 문서에 명시적인 결론이 없으면 조사된 사실관계를 바탕으로 한 판단을 간결히 제시.
+- discipline_review: 징계수준 검토의견 — 문서에 적힌 징계 수위(예: 견책/감봉/정직/해고 등) 검토 의견이나 그 근거를 간결히 요약. 문서에 명시적으로 없으면 빈 문자열로 둠.
+반드시 아래 JSON 형식으로만 답하세요. 다른 설명, 마크다운, 코드블록 기호를 절대 붙이지 마세요.
+{"acknowledgment": "...", "discipline_review": "..."}`;
+      const analyzeUser = `다음은 조사결과보고서 본문입니다:\n\n${content.slice(0, 120000)}`;
+      let acknowledgment = "", discipline_review = "";
+      try {
+        const aiRes = await callClaude(analyzeSys, analyzeUser);
+        const parsed = extractJSON(aiRes);
+        acknowledgment = parsed.acknowledgment || "";
+        discipline_review = parsed.discipline_review || "";
+      } catch (e) {
+        console.error("보고서 분석 실패:", e);
+        showToast("본문은 반영했지만 인정여부/징계수준 검토의견 자동분석에는 실패했습니다. 직접 입력해주세요.");
+      }
+
+      await sb.from("hr_case_cases").update({
+        report_draft: content,
+        acknowledgment,
+        discipline_review,
+        status: "보고서작성"
+      }).eq("id", caseId);
       await refreshCases();
-      showToast("업로드한 파일 내용을 보고서 본문에 반영했습니다. 확인 후 필요하면 직접 수정하세요.");
+      showToast("업로드한 파일 내용을 보고서 본문에 반영하고, 인정여부·징계수준 검토의견도 자동 기재했습니다. 확인 후 필요하면 직접 수정하세요.");
       renderReportDetail();
     } catch (e) {
       showToast("업로드 실패: " + e.message);
